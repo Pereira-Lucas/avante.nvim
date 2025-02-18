@@ -77,10 +77,10 @@ local name_map = {
   cursor = "cursor",
 }
 
-local CURRENT_HL = "AvanteConflictCurrent"
-local INCOMING_HL = "AvanteConflictIncoming"
-local CURRENT_LABEL_HL = "AvanteConflictCurrentLabel"
-local INCOMING_LABEL_HL = "AvanteConflictIncomingLabel"
+local CURRENT_HL = Highlights.CURRENT
+local INCOMING_HL = Highlights.INCOMING
+local CURRENT_LABEL_HL = Highlights.CURRENT_LABEL
+local INCOMING_LABEL_HL = Highlights.INCOMING_LABEL
 local PRIORITY = vim.highlight.priorities.user
 local NAMESPACE = api.nvim_create_namespace("avante-conflict")
 local KEYBINDING_NAMESPACE = api.nvim_create_namespace("avante-conflict-keybinding")
@@ -283,12 +283,12 @@ local function register_cursor_move_events(bufnr)
 
     local hint = string.format(
       "[<%s>: OURS, <%s>: THEIRS, <%s>: CURSOR, <%s>: ALL THEIRS, <%s>: PREV, <%s>: NEXT]",
-      Config.diff.mappings.ours,
-      Config.diff.mappings.theirs,
-      Config.diff.mappings.cursor,
-      Config.diff.mappings.all_theirs,
-      Config.diff.mappings.prev,
-      Config.diff.mappings.next
+      Config.mappings.diff.ours,
+      Config.mappings.diff.theirs,
+      Config.mappings.diff.cursor,
+      Config.mappings.diff.all_theirs,
+      Config.mappings.diff.prev,
+      Config.mappings.diff.next
     )
 
     show_keybinding_hint_extmark_id = api.nvim_buf_set_extmark(bufnr, KEYBINDING_NAMESPACE, lnum - 1, -1, {
@@ -299,15 +299,16 @@ local function register_cursor_move_events(bufnr)
     })
   end
 
-  api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
+  api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI", "WinLeave" }, {
     buffer = bufnr,
-    callback = function()
+    callback = function(event)
       local position = get_current_position(bufnr)
-
-      if position then
+      if (event.event == "CursorMoved" or event.event == "CursorMovedI") and position then
         show_keybinding_hint(position.current.range_start + 1)
+        M.override_timeoutlen(bufnr)
       else
         api.nvim_buf_clear_namespace(bufnr, KEYBINDING_NAMESPACE, 0, -1)
+        M.restore_timeoutlen(bufnr)
       end
     end,
   })
@@ -354,18 +355,18 @@ H.setup_buffer_mappings = function(bufnr)
   ---@param desc string
   local function opts(desc) return { silent = true, buffer = bufnr, desc = "avante(conflict): " .. desc } end
 
-  vim.keymap.set({ "n", "v" }, Config.diff.mappings.ours, function() M.choose("ours") end, opts("choose ours"))
-  vim.keymap.set({ "n", "v" }, Config.diff.mappings.both, function() M.choose("both") end, opts("choose both"))
-  vim.keymap.set({ "n", "v" }, Config.diff.mappings.theirs, function() M.choose("theirs") end, opts("choose theirs"))
+  vim.keymap.set({ "n", "v" }, Config.mappings.diff.ours, function() M.choose("ours") end, opts("choose ours"))
+  vim.keymap.set({ "n", "v" }, Config.mappings.diff.both, function() M.choose("both") end, opts("choose both"))
+  vim.keymap.set({ "n", "v" }, Config.mappings.diff.theirs, function() M.choose("theirs") end, opts("choose theirs"))
   vim.keymap.set(
     { "n", "v" },
-    Config.diff.mappings.all_theirs,
+    Config.mappings.diff.all_theirs,
     function() M.choose("all_theirs") end,
     opts("choose all theirs")
   )
-  vim.keymap.set("n", Config.diff.mappings.cursor, function() M.choose("cursor") end, opts("choose under cursor"))
-  vim.keymap.set("n", Config.diff.mappings.prev, function() M.find_prev("ours") end, opts("previous conflict"))
-  vim.keymap.set("n", Config.diff.mappings.next, function() M.find_next("ours") end, opts("next conflict"))
+  vim.keymap.set("n", Config.mappings.diff.cursor, function() M.choose("cursor") end, opts("choose under cursor"))
+  vim.keymap.set("n", Config.mappings.diff.prev, function() M.find_prev("ours") end, opts("previous conflict"))
+  vim.keymap.set("n", Config.mappings.diff.next, function() M.find_next("ours") end, opts("next conflict"))
 
   vim.b[bufnr].avante_conflict_mappings_set = true
 end
@@ -373,10 +374,28 @@ end
 ---@param bufnr integer
 H.clear_buffer_mappings = function(bufnr)
   if not bufnr or not vim.b[bufnr].avante_conflict_mappings_set then return end
-  for _, mapping in pairs(Config.diff.mappings) do
+  for _, mapping in pairs(Config.mappings.diff) do
     if vim.fn.hasmapto(mapping, "n") > 0 then api.nvim_buf_del_keymap(bufnr, "n", mapping) end
   end
   vim.b[bufnr].avante_conflict_mappings_set = false
+  M.restore_timeoutlen(bufnr)
+end
+
+---@param bufnr integer
+M.override_timeoutlen = function(bufnr)
+  if vim.b[bufnr].avante_original_timeoutlen then return end
+  if Config.diff.override_timeoutlen > 0 then
+    vim.b[bufnr].avante_original_timeoutlen = vim.o.timeoutlen
+    vim.o.timeoutlen = Config.diff.override_timeoutlen
+  end
+end
+
+---@param bufnr integer
+M.restore_timeoutlen = function(bufnr)
+  if vim.b[bufnr].avante_original_timeoutlen then
+    vim.o.timeoutlen = vim.b[bufnr].avante_original_timeoutlen
+    vim.b[bufnr].avante_original_timeoutlen = nil
+  end
 end
 
 M.augroup = api.nvim_create_augroup(AUGROUP_NAME, { clear = true })
@@ -539,7 +558,7 @@ end
 ---@param enable_autojump boolean
 function M.process_position(bufnr, side, position, enable_autojump)
   local lines = {}
-  if vim.tbl_contains({ SIDES.OURS, SIDES.THEIRS, SIDES.BASE }, side) then
+  if vim.tbl_contains({ SIDES.OURS, SIDES.THEIRS }, side) then
     local data = position[name_map[side]]
     lines = Utils.get_buf_lines(data.content_start, data.content_end + 1)
   elseif side == SIDES.BOTH then
@@ -550,7 +569,7 @@ function M.process_position(bufnr, side, position, enable_autojump)
     lines = {}
   elseif side == SIDES.CURSOR then
     local cursor_line = Utils.get_cursor_pos()
-    for _, pos in ipairs({ SIDES.OURS, SIDES.THEIRS, SIDES.BASE }) do
+    for _, pos in ipairs({ SIDES.OURS, SIDES.THEIRS }) do
       local data = position[name_map[pos]] or {}
       if data.range_start and data.range_start + 1 <= cursor_line and data.range_end + 1 >= cursor_line then
         side = pos

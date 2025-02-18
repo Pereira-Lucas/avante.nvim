@@ -11,21 +11,26 @@ local DressingConfig = {
 local DressingState = { winid = nil, input_winid = nil, input_bufnr = nil }
 
 ---@class AvanteHandlerOptions: table<[string], string>
----@field on_chunk AvanteChunkParser
----@field on_complete AvanteCompleteParser
+---@field on_start AvanteLLMStartCallback
+---@field on_chunk AvanteLLMChunkCallback
+---@field on_stop AvanteLLMStopCallback
+---
+---@class AvanteLLMMessage
+---@field role "user" | "assistant"
+---@field content string
+---
+---@class AvanteLLMToolResult
+---@field tool_name string
+---@field tool_use_id string
+---@field content string
+---@field is_error? boolean
 ---
 ---@class AvantePromptOptions: table<[string], string>
 ---@field system_prompt string
----@field user_prompts string[]
+---@field messages AvanteLLMMessage[]
 ---@field image_paths? string[]
----
----@class AvanteBaseMessage
----@field role "user" | "system"
----@field content string
----
----@class AvanteClaudeMessage: AvanteBaseMessage
----@field role "user"
----@field content {type: "text", text: string, cache_control?: {type: "ephemeral"}}[]
+---@field tools? AvanteLLMTool[]
+---@field tool_histories? AvanteLLMToolHistory[]
 ---
 ---@class AvanteGeminiMessage
 ---@field role "user"
@@ -33,15 +38,16 @@ local DressingState = { winid = nil, input_winid = nil, input_bufnr = nil }
 ---
 ---@alias AvanteChatMessage AvanteClaudeMessage | OpenAIMessage | AvanteGeminiMessage
 ---
----@alias AvanteMessageParser fun(opts: AvantePromptOptions): AvanteChatMessage[]
+---@alias AvanteMessagesParser fun(opts: AvantePromptOptions): AvanteChatMessage[]
 ---
----@class AvanteCurlOutput: {url: string, proxy: string, insecure: boolean, body: table<string, any> | string, headers: table<string, string>}
----@alias AvanteCurlArgsParser fun(opts: AvanteProvider | AvanteProviderFunctor, code_opts: AvantePromptOptions): AvanteCurlOutput
+---@class AvanteCurlOutput: {url: string, proxy: string, insecure: boolean, body: table<string, any> | string, headers: table<string, string>, rawArgs: string[] | nil}
+---@alias AvanteCurlArgsParser fun(provider: AvanteProvider | AvanteProviderFunctor | AvanteBedrockProviderFunctor, prompt_opts: AvantePromptOptions): AvanteCurlOutput
 ---
 ---@class ResponseParser
----@field on_chunk fun(chunk: string): any
----@field on_complete fun(err: string|nil): any
----@alias AvanteResponseParser fun(data_stream: string, event_state: string, opts: ResponseParser): nil
+---@field on_start AvanteLLMStartCallback
+---@field on_chunk AvanteLLMChunkCallback
+---@field on_stop AvanteLLMStopCallback
+---@alias AvanteResponseParser fun(ctx: any, data_stream: string, event_state: string, opts: ResponseParser): nil
 ---
 ---@class AvanteDefaultBaseProvider: table<string, any>
 ---@field endpoint? string
@@ -52,14 +58,39 @@ local DressingState = { winid = nil, input_winid = nil, input_bufnr = nil }
 ---@field allow_insecure? boolean
 ---@field api_key_name? string
 ---@field _shellenv? string
+---@field disable_tools? boolean
 ---
 ---@class AvanteSupportedProvider: AvanteDefaultBaseProvider
+---@field __inherited_from? string
 ---@field temperature? number
 ---@field max_tokens? number
+---@field reasoning_effort? string
+---
+---@class AvanteLLMUsage
+---@field input_tokens number
+---@field cache_creation_input_tokens number
+---@field cache_read_input_tokens number
+---@field output_tokens number
+---
+---@class AvanteLLMToolUse
+---@field name string
+---@field id string
+---@field input_json string
+---@field response_content? string
+---
+---@class AvanteLLMStartCallbackOptions
+---@field usage? AvanteLLMUsage
+---
+---@class AvanteLLMStopCallbackOptions
+---@field reason "complete" | "tool_use" | "error"
+---@field error? string | table
+---@field usage? AvanteLLMUsage
+---@field tool_use_list? AvanteLLMToolUse[]
 ---
 ---@alias AvanteStreamParser fun(line: string, handler_opts: AvanteHandlerOptions): nil
----@alias AvanteChunkParser fun(chunk: string): any
----@alias AvanteCompleteParser fun(err: string|nil): nil
+---@alias AvanteLLMStartCallback fun(opts: AvanteLLMStartCallbackOptions): nil
+---@alias AvanteLLMChunkCallback fun(chunk: string): any
+---@alias AvanteLLMStopCallback fun(opts: AvanteLLMStopCallbackOptions): nil
 ---@alias AvanteLLMConfigHandler fun(opts: AvanteSupportedProvider): AvanteDefaultBaseProvider, table<string, any>
 ---
 ---@class AvanteProvider: AvanteSupportedProvider
@@ -69,7 +100,8 @@ local DressingState = { winid = nil, input_winid = nil, input_bufnr = nil }
 ---@field parse_api_key? fun(): string | nil
 ---
 ---@class AvanteProviderFunctor
----@field parse_message AvanteMessageParser
+---@field role_map table<"user" | "assistant", string>
+---@field parse_messages AvanteMessagesParser
 ---@field parse_response AvanteResponseParser
 ---@field parse_curl_args AvanteCurlArgsParser
 ---@field setup fun(): nil
@@ -80,14 +112,31 @@ local DressingState = { winid = nil, input_winid = nil, input_bufnr = nil }
 ---@field model? string
 ---@field parse_api_key fun(): string | nil
 ---@field parse_stream_data? AvanteStreamParser
----@field on_error? fun(result: table): nil
+---@field on_error? fun(result: table<string, any>): nil
+---
+---@class AvanteBedrockProviderFunctor
+---@field parse_response AvanteResponseParser
+---@field parse_curl_args AvanteCurlArgsParser
+---@field setup fun(): nil
+---@field has fun(): boolean
+---@field api_key_name string
+---@field tokenizer_id string | "gpt-4o"
+---@field use_xml_format boolean
+---@field model? string
+---@field parse_api_key fun(): string | nil
+---@field parse_stream_data? AvanteStreamParser
+---@field on_error? fun(result: table<string, any>): nil
+---@field load_model_handler fun(): AvanteBedrockModelHandler
+---@field build_bedrock_payload? fun(prompt_opts: AvantePromptOptions, body_opts: table<string, any>): table<string, any>
 ---
 ---@class avante.Providers
 ---@field openai AvanteProviderFunctor
 ---@field claude AvanteProviderFunctor
+---@field copilot AvanteProviderFunctor
 ---@field azure AvanteProviderFunctor
 ---@field gemini AvanteProviderFunctor
 ---@field cohere AvanteProviderFunctor
+---@field bedrock AvanteBedrockProviderFunctor
 local M = {}
 
 ---@class EnvironmentHandler
@@ -97,7 +146,7 @@ local E = {}
 ---@type table<string, string>
 E.cache = {}
 
----@param Opts AvanteSupportedProvider | AvanteProviderFunctor
+---@param Opts AvanteSupportedProvider | AvanteProviderFunctor | AvanteBedrockProviderFunctor
 ---@return string | nil
 E.parse_envvar = function(Opts)
   local api_key_name = Opts.api_key_name
@@ -109,32 +158,32 @@ E.parse_envvar = function(Opts)
 
   local cmd = type(api_key_name) == "table" and api_key_name or api_key_name:match("^cmd:(.*)")
 
-  local key = nil
+  local value = nil
 
   if cmd ~= nil then
     -- NOTE: in case api_key_name is cmd, and users still set envvar
     -- We will try to get envvar first
-    if Opts._shellenv ~= nil and Opts._shellenv ~= M.AVANTE_INTERNAL_KEY then
-      key = os.getenv(Opts._shellenv)
-      if key ~= nil then
-        ---@diagnostic disable: no-unknown
-        E.cache[Opts._shellenv] = key
-        E.cache[cache_key] = key
+    if Opts._shellenv ~= nil and Opts._shellenv ~= "" then
+      value = os.getenv(Opts._shellenv)
+      if value ~= nil then
+        E.cache[cache_key] = value
         vim.g.avante_login = true
-        return key
+        return value
       end
     end
 
     if type(cmd) == "string" then cmd = vim.split(cmd, " ", { trimempty = true }) end
 
+    Utils.debug("running command:", cmd)
     local exit_codes = { 0 }
     local ok, job_or_err = pcall(vim.system, cmd, { text = true }, function(result)
+      Utils.debug("command result:", result)
       local code = result.code
       local stderr = result.stderr or ""
       local stdout = result.stdout and vim.split(result.stdout, "\n") or {}
       if vim.tbl_contains(exit_codes, code) then
-        key = stdout[1]
-        E.cache[cache_key] = key
+        value = stdout[1]
+        E.cache[cache_key] = value
         vim.g.avante_login = true
       else
         Utils.error("Failed to get API key: (error code" .. code .. ")\n" .. stderr, { once = true, title = "Avante" })
@@ -146,33 +195,33 @@ E.parse_envvar = function(Opts)
       return
     end
   else
-    key = os.getenv(api_key_name)
+    value = os.getenv(api_key_name)
   end
 
-  if key ~= nil then
-    E.cache[cache_key] = key
+  if value ~= nil then
+    E.cache[cache_key] = value
     vim.g.avante_login = true
   end
 
-  return key
+  return value
 end
 
 --- initialize the environment variable for current neovim session.
 --- This will only run once and spawn a UI for users to input the envvar.
----@param opts {refresh: boolean, provider: AvanteProviderFunctor}
+---@param opts {refresh: boolean, provider: AvanteProviderFunctor | AvanteBedrockProviderFunctor}
 ---@private
 E.setup = function(opts)
-  if opts.provider["local"] then
+  opts.provider.setup()
+
+  local var = opts.provider.api_key_name
+
+  if var == nil or var == "" then
     vim.g.avante_login = true
     return
   end
 
-  local var = opts.provider.api_key_name
-
-  opts.provider.setup()
-
   -- check if var is a all caps string
-  if var == M.AVANTE_INTERNAL_KEY or type(var) == "table" or var:match("^cmd:(.*)") then return end
+  if type(var) == "table" or var:match("^cmd:(.*)") then return end
 
   local refresh = opts.refresh or false
 
@@ -249,31 +298,42 @@ end
 
 E.REQUEST_LOGIN_PATTERN = "AvanteRequestLogin"
 
----@param provider Provider
-E.is_local = function(provider)
-  local cur = M.get_config(provider)
-  return cur["local"] ~= nil and cur["local"] or false
+---@param provider AvanteDefaultBaseProvider
+E.require_api_key = function(provider)
+  if provider["local"] ~= nil then
+    if provider["local"] then
+      vim.deprecate('"local" = true', "api_key_name = ''", "0.1.0", "avante.nvim")
+    else
+      vim.deprecate('"local" = false', "api_key_name", "0.1.0", "avante.nvim")
+    end
+    return not provider["local"]
+  end
+  return provider.api_key_name ~= nil and provider.api_key_name ~= ""
 end
 
 M.env = E
-
-M.AVANTE_INTERNAL_KEY = "__avante_env_internal"
 
 M = setmetatable(M, {
   ---@param t avante.Providers
   ---@param k Provider
   __index = function(t, k)
-    ---@type AvanteProviderFunctor
+    ---@type AvanteProviderFunctor | AvanteBedrockProviderFunctor
     local Opts = M.get_config(k)
 
     ---@diagnostic disable: undefined-field,no-unknown,inject-field
     if Config.vendors[k] ~= nil then
       Opts.parse_response = Opts.parse_response_data
-      t[k] = Opts
+      if Opts.__inherited_from ~= nil then
+        local BaseOpts = M.get_config(Opts.__inherited_from)
+        local ok, module = pcall(require, "avante.providers." .. Opts.__inherited_from)
+        if not ok then error("Failed to load provider: " .. Opts.__inherited_from) end
+        t[k] = vim.tbl_deep_extend("keep", Opts, BaseOpts, module)
+      else
+        t[k] = Opts
+      end
     else
       local ok, module = pcall(require, "avante.providers." .. k)
       if not ok then error("Failed to load provider: " .. k) end
-      Opts._shellenv = module.api_key_name ~= M.AVANTE_INTERNAL_KEY and module.api_key_name or nil
       t[k] = vim.tbl_deep_extend("keep", Opts, module)
     end
 
@@ -287,8 +347,9 @@ M = setmetatable(M, {
     if t[k].has == nil then t[k].has = function() return E.parse_envvar(t[k]) ~= nil end end
 
     if t[k].setup == nil then
+      local provider_conf = M.parse_config(t[k])
       t[k].setup = function()
-        if not E.is_local(k) then t[k].parse_api_key() end
+        if E.require_api_key(provider_conf) then t[k].parse_api_key() end
         require("avante.tokenizers").setup(t[k].tokenizer_id)
       end
     end
@@ -300,13 +361,21 @@ M = setmetatable(M, {
 M.setup = function()
   vim.g.avante_login = false
 
-  ---@type AvanteProviderFunctor
+  ---@type AvanteProviderFunctor | AvanteBedrockProviderFunctor
   local provider = M[Config.provider]
   local auto_suggestions_provider = M[Config.auto_suggestions_provider]
+
   E.setup({ provider = provider })
 
   if auto_suggestions_provider and auto_suggestions_provider ~= provider then
     E.setup({ provider = auto_suggestions_provider })
+  end
+
+  if Config.cursor_applying_provider then
+    local cursor_applying_provider = M[Config.cursor_applying_provider]
+    if cursor_applying_provider and cursor_applying_provider ~= provider then
+      E.setup({ provider = cursor_applying_provider })
+    end
   end
 end
 
@@ -314,38 +383,43 @@ end
 function M.refresh(provider)
   require("avante.config").override({ provider = provider })
 
-  ---@type AvanteProviderFunctor
+  ---@type AvanteProviderFunctor | AvanteBedrockProviderFunctor
   local p = M[Config.provider]
   E.setup({ provider = p, refresh = true })
   Utils.info("Switch to provider: " .. provider, { once = true, title = "Avante" })
 end
 
----@param opts AvanteProvider | AvanteSupportedProvider | AvanteProviderFunctor
----@return AvanteDefaultBaseProvider, table<string, any>
+---@param opts AvanteProvider | AvanteSupportedProvider | AvanteProviderFunctor | AvanteBedrockProviderFunctor
+---@return AvanteDefaultBaseProvider provider_opts
+---@return table<string, any> request_body
 M.parse_config = function(opts)
   ---@type AvanteDefaultBaseProvider
-  local s1 = {}
+  local provider_opts = {}
   ---@type table<string, any>
-  local s2 = {}
+  local request_body = {}
 
   for key, value in pairs(opts) do
     if vim.tbl_contains(Config.BASE_PROVIDER_KEYS, key) then
-      s1[key] = value
+      provider_opts[key] = value
     else
-      s2[key] = value
+      request_body[key] = value
     end
   end
 
-  return s1,
-    vim.iter(s2):filter(function(_, v) return type(v) ~= "function" end):fold({}, function(acc, k, v)
+  request_body = vim
+    .iter(request_body)
+    :filter(function(_, v) return type(v) ~= "function" end)
+    :fold({}, function(acc, k, v)
       acc[k] = v
       return acc
     end)
+
+  return provider_opts, request_body
 end
 
 ---@private
 ---@param provider Provider
----@return AvanteProviderFunctor
+---@return AvanteProviderFunctor | AvanteBedrockProviderFunctor
 M.get_config = function(provider)
   provider = provider or Config.provider
   local cur = Config.get_provider(provider)

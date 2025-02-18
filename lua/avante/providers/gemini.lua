@@ -6,10 +6,37 @@ local Clipboard = require("avante.clipboard")
 local M = {}
 
 M.api_key_name = "GEMINI_API_KEY"
+M.role_map = {
+  user = "user",
+  assistant = "model",
+}
 -- M.tokenizer_id = "google/gemma-2b"
 
-M.parse_message = function(opts)
-  local message_content = {}
+M.parse_messages = function(opts)
+  local contents = {}
+  local prev_role = nil
+
+  vim.iter(opts.messages):each(function(message)
+    local role = message.role
+    if role == prev_role then
+      if role == M.role_map["user"] then
+        table.insert(
+          contents,
+          { role = M.role_map["assistant"], parts = {
+            { text = "Ok, I understand." },
+          } }
+        )
+      else
+        table.insert(contents, { role = M.role_map["user"], parts = {
+          { text = "Ok" },
+        } })
+      end
+    end
+    prev_role = role
+    table.insert(contents, { role = M.role_map[role] or role, parts = {
+      { text = message.content },
+    } })
+  end)
 
   if Clipboard.support_paste_image() and opts.image_paths then
     for _, image_path in ipairs(opts.image_paths) do
@@ -20,12 +47,9 @@ M.parse_message = function(opts)
         },
       }
 
-      table.insert(message_content, image_data)
+      table.insert(contents[#contents].parts, image_data)
     end
   end
-
-  -- insert a part into parts
-  table.insert(message_content, { text = table.concat(opts.user_prompts, "\n") })
 
   return {
     systemInstruction = {
@@ -36,49 +60,51 @@ M.parse_message = function(opts)
         },
       },
     },
-    contents = {
-      {
-        role = "user",
-        parts = message_content,
-      },
-    },
+    contents = contents,
   }
 end
 
-M.parse_response = function(data_stream, _, opts)
+M.parse_response = function(ctx, data_stream, _, opts)
   local ok, json = pcall(vim.json.decode, data_stream)
-  if not ok then opts.on_complete(json) end
+  if not ok then opts.on_stop({ reason = "error", error = json }) end
   if json.candidates then
     if #json.candidates > 0 then
-      opts.on_chunk(json.candidates[1].content.parts[1].text)
-    elseif json.candidates.finishReason and json.candidates.finishReason == "STOP" then
-      opts.on_complete(nil)
+      if json.candidates[1].finishReason and json.candidates[1].finishReason == "STOP" then
+        opts.on_chunk(json.candidates[1].content.parts[1].text)
+        opts.on_stop({ reason = "complete" })
+      else
+        opts.on_chunk(json.candidates[1].content.parts[1].text)
+      end
+    else
+      opts.on_stop({ reason = "complete" })
     end
   end
 end
 
-M.parse_curl_args = function(provider, code_opts)
-  local base, body_opts = P.parse_config(provider)
+M.parse_curl_args = function(provider, prompt_opts)
+  local provider_conf, request_body = P.parse_config(provider)
 
-  body_opts = vim.tbl_deep_extend("force", body_opts, {
+  request_body = vim.tbl_deep_extend("force", request_body, {
     generationConfig = {
-      temperature = body_opts.temperature,
-      maxOutputTokens = body_opts.max_tokens,
+      temperature = request_body.temperature,
+      maxOutputTokens = request_body.max_tokens,
     },
   })
-  body_opts.temperature = nil
-  body_opts.max_tokens = nil
+  request_body.temperature = nil
+  request_body.max_tokens = nil
+
+  local api_key = provider.parse_api_key()
+  if api_key == nil then error("Cannot get the gemini api key!") end
 
   return {
-    url = Utils.trim(base.endpoint, { suffix = "/" })
-      .. "/"
-      .. base.model
-      .. ":streamGenerateContent?alt=sse&key="
-      .. provider.parse_api_key(),
-    proxy = base.proxy,
-    insecure = base.allow_insecure,
+    url = Utils.url_join(
+      provider_conf.endpoint,
+      provider_conf.model .. ":streamGenerateContent?alt=sse&key=" .. api_key
+    ),
+    proxy = provider_conf.proxy,
+    insecure = provider_conf.allow_insecure,
     headers = { ["Content-Type"] = "application/json" },
-    body = vim.tbl_deep_extend("force", {}, M.parse_message(code_opts), body_opts),
+    body = vim.tbl_deep_extend("force", {}, M.parse_messages(prompt_opts), request_body),
   }
 end
 

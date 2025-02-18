@@ -1,17 +1,6 @@
-{# Uses https://mitsuhiko.github.io/minijinja-playground/ for testing:
-{
-  "ask": true,
-  "use_xml_format": true,
-  "question": "Refactor to include tab flow",
-  "code_lang": "lua",
-  "file_content": "local Config = require('avante.config')"
-}
-#}
+{% extends "base.avanterules" %}
 {%- if ask %}
-{%- if not use_xml_format -%}
-INSTRUCTION:{% else -%}
-<instruction>{% endif -%}
-{% block user_prompt %}
+{% block extra_prompt %}
 Take requests for changes to the supplied code.
 If the request is ambiguous, ask questions.
 
@@ -44,7 +33,7 @@ ONLY EVER RETURN CODE IN A *SEARCH/REPLACE BLOCK*!
 
 Here are the *SEARCH/REPLACE* blocks:
 
-mathweb/flask/app.py
+<FILEPATH>mathweb/flask/app.py</FILEPATH>
 <SEARCH>
 from flask import Flask
 </SEARCH>
@@ -53,7 +42,7 @@ import math
 from flask import Flask
 </REPLACE>
 
-mathweb/flask/app.py
+<FILEPATH>mathweb/flask/app.py</FILEPATH>
 <SEARCH>
 def factorial(n):
     "compute factorial"
@@ -67,7 +56,7 @@ def factorial(n):
 <REPLACE>
 </REPLACE>
 
-mathweb/flask/app.py
+<FILEPATH>mathweb/flask/app.py</FILEPATH>
 <SEARCH>
     return str(factorial(n))
 </SEARCH>
@@ -85,7 +74,7 @@ mathweb/flask/app.py
 
 Here are the *SEARCH/REPLACE* blocks:
 
-hello.py
+<FILEPATH>hello.py</FILEPATH>
 <SEARCH>
 </SEARCH>
 <REPLACE>
@@ -95,7 +84,7 @@ def hello():
     print("hello")
 </REPLACE>
 
-main.py
+<FILEPATH>main.py</FILEPATH>
 <SEARCH>
 def hello():
     "print a greeting"
@@ -105,6 +94,7 @@ def hello():
 <REPLACE>
 from hello import hello
 </REPLACE>
+
 # *SEARCH/REPLACE block* Rules:
 
 Every *SEARCH/REPLACE block* must use this format:
@@ -115,6 +105,24 @@ Every *SEARCH/REPLACE block* must use this format:
 5. The start of replace block: <REPLACE>
 6. The lines to replace into the source code
 7. The end of the replace block: </REPLACE>
+8. Please *DO NOT* put *SEARCH/REPLACE block* inside three backticks: {%raw%}```{%endraw%}
+10. Each block start and end tag must be on a separate line, and the lines they are on cannot contain anything else, I BEG YOU!
+
+This is bad case:
+
+<SEARCH>
+foo</SEARCH>
+<REPLACE>
+bar</REPLACE>
+
+This is good case:
+
+<SEARCH>
+foo
+</SEARCH>
+<REPLACE>
+bar
+</REPLACE>
 
 Use the *FULL* file path, as shown to you by the user.
 
@@ -124,11 +132,11 @@ If the file contains code or other data wrapped/escaped in json/xml/quotes or ot
 *SEARCH/REPLACE* blocks will replace *all* matching occurrences.
 Include enough lines to make the SEARCH blocks uniquely match the lines to change.
 
+*DO NOT* include three backticks: {%raw%}```{%endraw%} in your response!
 Keep *SEARCH/REPLACE* blocks concise.
 Break large *SEARCH/REPLACE* blocks into a series of smaller blocks that each change a small portion of the file.
 Include just the changing lines, and a few surrounding lines if needed for uniqueness.
 Do not include long runs of unchanging lines in *SEARCH/REPLACE* blocks.
-*DO NOT* include three backticks: {%raw%}```{%endraw%} in your response!
 {% if use_xml_format -%}
 ONLY change the <code>, DO NOT change the <context>!
 {% else -%}
@@ -150,19 +158,4 @@ To rename files which have been added to the chat, use shell commands at the end
 
 ONLY EVER RETURN CODE IN A *SEARCH/REPLACE BLOCK*!
 {% endblock %}
-{%- if use_xml_format -%}
-</instruction>
-
-<question>{{question}}</question>
-{%- else %}
-QUESTION:
-{{question}}
-{%- endif %}
-{% else %}
-{% if use_xml_format -%}
-<question>{{question}}</question>
-{% else %}
-QUESTION:
-{{question}}
-{%- endif %}
 {%- endif %}
